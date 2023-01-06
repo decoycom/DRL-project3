@@ -108,21 +108,18 @@ def brain(brain_name,agent,config,env, it=0, fig = None, ax = None,log_prefix='b
     return (scores, win_mean,last_win >= s_margin,max_win,max_mean)
 
 #                (brain_name,agent,config,env, it=0, fig = None, ax = None,log_prefix='brain_')
-def brain_multy(brain_name,agent,config,env, it=0, fig = None, ax = None,log_prefix='brain_'):
+def brain_multy(brain_name, agent, config, env,
+                score_fn=np.mean,
+                it=0, fig = None, ax = None,log_prefix='brain_'):
+#     brain_name = config.brain_names[0]
     number = config.num_workers
     n_episodes = config.eval_episodes # 2000, 
     max_t = config.max_steps # 1500, 
     window = getattr(config, 'scores_window', 100)
     
-    scores = []                        # list containing scores from each episode
+    scores = []                            # list containing scores from each episode
     scores_window_mean = []
-    scores_window = []  # last 100 scores
-    
-    for i in range(number):
-#         scores.append([])
-        scores_window.append(deque(maxlen=window))
-    
-    # eps = eps_start                    # initialize epsilon
+    scores_window = deque(maxlen=window)   # last 100 scores
 
     pritty = getattr(config, 'pritty_fields', {})
     st = ''
@@ -169,9 +166,9 @@ def brain_multy(brain_name,agent,config,env, it=0, fig = None, ax = None,log_pre
             score = score + rewards
             if np.any(dones):
                 break 
-        for i in range(number):
-            scores_window[i].append(score[i])       # save most recent score
-        scores.append(np.mean(score))              # save most recent score
+        s = score_fn(score)
+        scores_window.append(s)
+        scores.append(s)                                 # save most recent score
         win_mean = np.mean(scores_window)
         scores_window_mean.append(win_mean)
         if max_win != starter:
@@ -184,7 +181,99 @@ def brain_multy(brain_name,agent,config,env, it=0, fig = None, ax = None,log_pre
         if i_episode % window == 0:
             if no_reg and max_win - (max_win / 100.0 * perc_reg) > win_mean :
                 log('=[Avg:{:.2f} max:{:.2f}]= Finished![{}] {}\t{} '.format(win_mean, max_mean ,it,st, i_episode),log_prefix)
-                print('\rFinished![{}] {}\t{} a-Average Score: {:.2f} max.win.mean:{:.2f}'.format(it,st, i_episode ,win_mean, max_mean), flush = True)
+#                 print('\rFinished![{}] {}\t{} a-Average Score: {:.2f} max.win.mean:{:.2f}'.format(it,st, i_episode ,win_mean, max_mean), flush = True)
+                return (scores, win_mean,last_win >= s_margin,max_win,max_mean)
+            else:
+                log('=[Avg:{:.2f} max:{:.2f}]= Episode[{}]\t{}'.format(win_mean, max_mean,it, i_episode),log_prefix)
+            max_win = max(max_win, win_mean)
+            max_mean = max(max_mean,max_win)
+    
+        if win_mean >= s_margin:
+            if last_win < win_mean: 
+                log('=[Avg:{:.2f} max:{:.2f}]= Episode[{}] Solved in {:d} episodes!\t{}'.format(win_mean, max_mean,it,i_episode-window,st),log_prefix)
+                agent.save(agent.filename(it,s_postfix,win_mean))
+                last_win = win_mean
+
+    return (scores, win_mean,last_win >= s_margin,max_win,max_mean)
+
+
+def brain_multy_step(agent, config, env, 
+                     brain_names = None,
+                     step_fn = None, info_fn = None, score_fn=np.mean,
+                     it=0, fig = None, ax = None, log_prefix='brain_'):
+    number = config.num_workers
+    n_episodes = config.eval_episodes # 2000, 
+    max_t = config.max_steps # 1500, 
+    window = getattr(config, 'scores_window', 100)
+    
+    scores = []                            # list containing scores from each episode
+    scores_window_mean = []
+    scores_window = deque(maxlen=window)   # last 100 scores
+
+    pritty = getattr(config, 'pritty_fields', {})
+    st = ''
+    for k in config.update_fields:
+        v = getattr(config, k)
+        if k in pritty:
+            k = pritty[k]
+        if float(v).is_integer():
+            st += '{}:{} '.format(k,v)
+        else:
+            st += '{}:{:.5f} '.format(k,v)
+    # print('\rStart[{}]\t{}'.format(it,st), flush = True)
+    log("Brain [{}] {}".format(it,st),log_prefix)
+
+    no_reg = getattr(config, 'stop_regression', True)
+    max_reg = getattr(config, 'max_regression', 0.5)
+    perc_reg = getattr(config, 'perc_regression', 20)
+    s_margin = getattr(config, 'save_margin', 32.0)
+    s_postfix = getattr(config, 'save_postfix', '')
+
+    def info_fn_old(env_info):
+        next_states = env_info.vector_observations   # get the next state
+        rewards = env_info.rewards                   # get the reward
+        dones = env_info.local_done                  # see if episode has finished
+        dones = np.asarray(dones, dtype=np.int32)
+        return (next_states,rewards,dones,env_info)        
+    
+    def step_fn_old(actions):
+        return info_fn_old( env.step(actions)[brain_names[0]] )
+            
+    if info_fn is None:
+        info_fn = info_fn_old
+    
+    if step_fn is None:
+        step_fn = step_fn_old
+    
+    win_mean = 0
+   
+    starter = -10000
+    max_win = starter
+    last_win = starter
+    max_mean = 0
+    for i_episode in range(1, n_episodes+1):
+        env_info = env.reset(train_mode=True)
+        # [brain_name] # reset the environment
+        states,_,_,_ = info_fn(env_info)        
+        # states = env_info.vector_observations
+        score = np.zeros(number)
+        for t in range(max_t):
+            states,rewards,dones = agent.learn(states,step_fn)         
+            score = score + rewards
+            if np.any(dones):
+                break 
+        s = score_fn(score)
+        scores_window.append(s)
+        scores.append(s)                        # save most recent score
+        win_mean = np.mean(scores_window)
+        scores_window_mean.append(win_mean)
+        if max_win != starter:
+            max_mean = max(max_mean,win_mean)
+        if fig is not None and ax is not None:
+            draw(fig,ax,[scores,scores_window_mean],'e:{} win:{:.2f} max:{:.2f}\n{}'.format(it,win_mean, max_mean,st))
+        if i_episode % window == 0:
+            if no_reg and max_win - (max_win / 100.0 * perc_reg) > win_mean :
+                log('=[Avg:{:.2f} max:{:.2f}]= Finished![{}] {}\t{} '.format(win_mean, max_mean ,it,st, i_episode),log_prefix)
                 return (scores, win_mean,last_win >= s_margin,max_win,max_mean)
             else:
                 log('=[Avg:{:.2f} max:{:.2f}]= Episode[{}]\t{}'.format(win_mean, max_mean,it, i_episode),log_prefix)
@@ -220,6 +309,7 @@ def initConf_ddpg(state_size,action_size,brain_name,env):
     config.device = Config.DEVICE
     # print("config.device:{}".format(config.device))
     config.brain_name = brain_name
+    config.brain_names = env.brain_names
     config.seed = 0    
 
     config.fc1 = 300
@@ -279,6 +369,7 @@ def initConf_ddpg2(state_size,action_size,brain_name,env):
     config.device = Config.DEVICE
     # print("config.device:{}".format(config.device))
     config.brain_name = brain_name
+    config.brain_names = env.brain_names
     config.seed = 0    
 
     config.n_mu = 0.0
@@ -326,7 +417,7 @@ def initConf_td3(state_size,action_size,brain_name,env):
     # select_device(0)
     config = Config()
     config.brain_name = brain_name
-
+    config.brain_names = env.brain_names
     config.update_fields = ['fc1','fc2','fc3','weight_decay','weight_decay_act','actor_lr','critic_lr','target_network_mix','discount','gradient_clip','td3_noise','td3_noise_clip','td3_delay']
     config.pritty_fields = {'weight_decay_act':'a_W','weight_decay':'c_W','actor_lr':'a_Lr','critic_lr':'c_Lr','target_network_mix':'tau','gradient_clip':'c_Clip','act_clip':'a_Clip','discount':'G', 'td3_noise':'N','td3_noise_clip':'N_Clip','td3_delay':'Delay'}
     #,'fc3'
@@ -384,7 +475,7 @@ def initConf_td3(state_size,action_size,brain_name,env):
 def a2c_feature(state_size,action_size,brain_name,env):
     config = Config()
     config.brain_name = brain_name
-
+    config.brain_names = env.brain_names
     config.update_fields = [
         'fc1','fc2','fc3',
         'act_layers','crt_layers',
@@ -428,10 +519,6 @@ def a2c_feature(state_size,action_size,brain_name,env):
                           tuple(e for e in [64*cfg.fc1,64*cfg.fc1 // cfg.fc2 ,64*cfg.fc1 // cfg.fc2 // cfg.fc3][:cfg.act_layers])),
         critic_body=FCBody(cfg.state_dim, 
                            tuple(e for e in [64*cfg.fc1,64*cfg.fc1 // cfg.fc2 ,64*cfg.fc1 // cfg.fc2 // cfg.fc3][:cfg.crt_layers])))
-        
-#     config.optimizer_fn = lambda params: torch.optim.RMSprop(params, 0.001)
-#     config.network_fn = lambda: CategoricalActorCriticNet(
-#         config.state_dim, config.action_dim, FCBody(config.state_dim, gate=F.tanh))
     
     config.storage_fn = lambda:  Storage(config.rollout_length)
     
@@ -503,7 +590,7 @@ def tune(
             else:
                 setattr(config, k, hyp[k])
 
-        scores,reward,done,max_win,max_mean = config.brain_fn(config,it=i,fig=fig,ax=ax,log_prefix=log_prefix)
+        scores,reward,done,max_win,max_mean = config.brain_fn(config,it=i,**kwargs)
         # brain(brain_name,a,config,env)
         scoresz.append(scores)
         
